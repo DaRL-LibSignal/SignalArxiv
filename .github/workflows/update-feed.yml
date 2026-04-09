@@ -40,7 +40,46 @@ jobs:
           tar -zxvf arxivfeed.tgz --strip-components 1 $(tar tf arxivfeed.tgz | grep /arxivfeed)
           chmod +x arxivfeed
       - name: Build rss
-        run: ./arxivfeed
+        run: |
+          mkdir -p target
+          # Try to fetch existing cache from GitHub Pages, fall back to empty
+          curl -sL "https://darl-libsignal.github.io/SignalArxiv/cache.json" -o target/cache.json 2>/dev/null || echo '{}' > target/cache.json
+
+          # Start local HTTP server to serve cache between runs
+          python3 -m http.server 9999 -d target &
+          sleep 1
+
+          # arXiv API rate limits to ~1 req/3s. Run ArxivFeed once per category
+          # with sleep between runs. Each run reads accumulated cache and appends.
+          CATEGORIES="cs.SY:Systems and Control|cs.LG:Machine Learning|cs.AI:Artificial Intelligence|cs.CE:Computational Engineering"
+
+          IFS='|' read -ra ENTRIES <<< "$CATEGORIES"
+          for entry in "${ENTRIES[@]}"; do
+            IFS=':' read -r CAT TITLE <<< "$entry"
+            cat > config.toml << EOF
+          site_title = "LibSignal-SignalArxiv"
+          limit_days = 7
+          cache_url = "http://localhost:9999/cache.json"
+
+          [[sources]]
+          limit = 150
+          category = "$CAT"
+          title = "$TITLE"
+
+          [scripts]
+          highlight_title = "scripts/highlight_title.rhai"
+          highlight_author = "scripts/highlight_author.rhai"
+          highlight_conference = "scripts/highlight_conference.rhai"
+          EOF
+            echo "--- Fetching $CAT ---"
+            ./arxivfeed
+            sleep 4
+          done
+
+          # Restore original config
+          git checkout config.toml
+
+          kill %1 2>/dev/null || true
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
